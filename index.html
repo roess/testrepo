@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>기울여라! 공 튀기기</title>
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #0b0f1a;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+  }
+
+  #game {
+    position: fixed;
+    inset: 0;
+    display: block;
+    background: radial-gradient(circle at 50% 0%, #1a2236 0%, #0b0f1a 70%);
+  }
+
+  #hud {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: max(10px, env(safe-area-inset-top)) 14px 8px 14px;
+    color: #eaf0ff;
+    pointer-events: none;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  }
+
+  #hud .stat {
+    font-size: 14px;
+    background: rgba(255,255,255,0.08);
+    padding: 6px 10px;
+    border-radius: 999px;
+    backdrop-filter: blur(4px);
+  }
+
+  #controls {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    padding: 12px 14px max(12px, env(safe-area-inset-bottom)) 14px;
+  }
+
+  button {
+    font-size: 14px;
+    font-weight: 600;
+    color: #0b0f1a;
+    background: #eaf0ff;
+    border: none;
+    border-radius: 999px;
+    padding: 12px 18px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:active {
+    transform: scale(0.96);
+  }
+
+  button.secondary {
+    background: rgba(255,255,255,0.12);
+    color: #eaf0ff;
+  }
+
+  #startOverlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: rgba(11,15,26,0.92);
+    color: #eaf0ff;
+    text-align: center;
+    padding: 24px;
+    z-index: 10;
+  }
+
+  #startOverlay h1 {
+    font-size: 24px;
+    margin: 0 0 4px 0;
+  }
+
+  #startOverlay p {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #b7c0da;
+    margin: 0;
+    max-width: 320px;
+  }
+
+  #hint {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(234,240,255,0.35);
+    font-size: 13px;
+    pointer-events: none;
+    text-align: center;
+  }
+
+  .hidden {
+    display: none !important;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="stat">공 <span id="ballCount">0</span>개</div>
+  <div class="stat" id="tiltStat">기울기: -</div>
+</div>
+
+<div id="hint">화면을 터치하면 공이 생겨요</div>
+
+<div id="controls">
+  <button id="addBallBtn" class="secondary">공 추가</button>
+  <button id="resetBtn" class="secondary">초기화</button>
+</div>
+
+<div id="startOverlay">
+  <h1>🎱 기울여라!</h1>
+  <p>핸드폰을 기울이면 화면 속 공들이 실제 중력처럼 굴러다녀요.<br>시작하려면 아래 버튼을 눌러주세요.</p>
+  <button id="startBtn">게임 시작</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const ballCountEl = document.getElementById("ballCount");
+  const tiltStatEl = document.getElementById("tiltStat");
+  const startOverlay = document.getElementById("startOverlay");
+  const startBtn = document.getElementById("startBtn");
+  const addBallBtn = document.getElementById("addBallBtn");
+  const resetBtn = document.getElementById("resetBtn");
+  const hint = document.getElementById("hint");
+
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let width = 0, height = 0;
+
+  function resize() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    canvas.style.width = width + "px";
+    canvas.style.height = height + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---- Physics world -------------------------------------------------
+
+  const GRAVITY_MAGNITUDE = 1600; // px/s^2 at full tilt
+  const RESTITUTION = 0.72;       // wall/ball bounce energy retention
+  const FRICTION = 0.995;         // air/rolling damping per frame @60fps
+  const COLORS = ["#ff5d73", "#ffb84d", "#5de3a3", "#4dc3ff", "#b57bff", "#ffe14d"];
+
+  let gravity = { x: 0, y: GRAVITY_MAGNITUDE * 0.6 }; // default: gentle downward pull
+  let balls = [];
+
+  function randRange(min, max) {
+    return min + Math.random() * (max - min);
+  }
+
+  function spawnBall(x, y) {
+    const r = randRange(16, 26);
+    balls.push({
+      x: x ?? randRange(r, width - r),
+      y: y ?? randRange(r, height * 0.4),
+      vx: randRange(-60, 60),
+      vy: 0,
+      r,
+      color: COLORS[balls.length % COLORS.length],
+      mass: r * r,
+    });
+    ballCountEl.textContent = balls.length;
+  }
+
+  function resetBalls() {
+    balls = [];
+    for (let i = 0; i < 6; i++) spawnBall();
+    ballCountEl.textContent = balls.length;
+  }
+
+  // ---- Device orientation → gravity vector ----------------------------
+
+  let usingOrientation = false;
+
+  function handleOrientation(e) {
+    // gamma: left-right tilt [-90,90], beta: front-back tilt [-180,180]
+    const gamma = e.gamma || 0;
+    const beta = e.beta || 0;
+
+    const gx = Math.max(-1, Math.min(1, gamma / 45));
+    const gy = Math.max(-1, Math.min(1, (beta - 20) / 45));
+
+    gravity.x = gx * GRAVITY_MAGNITUDE;
+    gravity.y = gy * GRAVITY_MAGNITUDE;
+    usingOrientation = true;
+
+    tiltStatEl.textContent =
+      "기울기: " + Math.round(gamma) + "°, " + Math.round(beta) + "°";
+  }
+
+  function enableOrientation() {
+    if (
+      typeof DeviceOrientationEvent !== "undefined" &&
+      typeof DeviceOrientationEvent.requestPermission === "function"
+    ) {
+      DeviceOrientationEvent.requestPermission()
+        .then((state) => {
+          if (state === "granted") {
+            window.addEventListener("deviceorientation", handleOrientation, true);
+          } else {
+            enableFallbackControls();
+          }
+        })
+        .catch(() => enableFallbackControls());
+    } else if (typeof DeviceOrientationEvent !== "undefined") {
+      window.addEventListener("deviceorientation", handleOrientation, true);
+      // If no event fires shortly (desktop browsers that lack sensors), fall back.
+      setTimeout(() => {
+        if (!usingOrientation) enableFallbackControls();
+      }, 1200);
+    } else {
+      enableFallbackControls();
+    }
+  }
+
+  // Desktop/no-sensor fallback: arrow keys & mouse tilt the gravity vector.
+  function enableFallbackControls() {
+    tiltStatEl.textContent = "기울기: 방향키/마우스 사용";
+    const keys = {};
+    window.addEventListener("keydown", (e) => (keys[e.key] = true));
+    window.addEventListener("keyup", (e) => (keys[e.key] = false));
+
+    function keyLoop() {
+      let gx = 0, gy = 0.6;
+      if (keys["ArrowLeft"]) gx -= 1;
+      if (keys["ArrowRight"]) gx += 1;
+      if (keys["ArrowUp"]) gy -= 1;
+      if (keys["ArrowDown"]) gy += 1;
+      if (gx || keys["ArrowUp"] || keys["ArrowDown"]) {
+        gravity.x = gx * GRAVITY_MAGNITUDE;
+        gravity.y = gy * GRAVITY_MAGNITUDE;
+      }
+      requestAnimationFrame(keyLoop);
+    }
+    keyLoop();
+
+    window.addEventListener("mousemove", (e) => {
+      const nx = (e.clientX / width) * 2 - 1;
+      const ny = (e.clientY / height) * 2 - 1;
+      gravity.x = nx * GRAVITY_MAGNITUDE * 0.6;
+      gravity.y = ny * GRAVITY_MAGNITUDE * 0.6 + GRAVITY_MAGNITUDE * 0.3;
+    });
+  }
+
+  // ---- Physics step -----------------------------------------------------
+
+  function step(dt) {
+    dt = Math.min(dt, 1 / 30); // clamp for stability on slow frames
+
+    for (const b of balls) {
+      b.vx += gravity.x * dt;
+      b.vy += gravity.y * dt;
+
+      b.vx *= FRICTION;
+      b.vy *= FRICTION;
+
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+
+      // Wall collisions
+      if (b.x - b.r < 0) {
+        b.x = b.r;
+        b.vx = -b.vx * RESTITUTION;
+      } else if (b.x + b.r > width) {
+        b.x = width - b.r;
+        b.vx = -b.vx * RESTITUTION;
+      }
+      if (b.y - b.r < 0) {
+        b.y = b.r;
+        b.vy = -b.vy * RESTITUTION;
+      } else if (b.y + b.r > height) {
+        b.y = height - b.r;
+        b.vy = -b.vy * RESTITUTION;
+      }
+    }
+
+    // Ball-ball collisions (simple elastic response)
+    for (let i = 0; i < balls.length; i++) {
+      for (let j = i + 1; j < balls.length; j++) {
+        const a = balls[i], b = balls[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 0.0001;
+        const minDist = a.r + b.r;
+        if (dist < minDist) {
+          const nx = dx / dist, ny = dy / dist;
+          const overlap = minDist - dist;
+          const totalMass = a.mass + b.mass;
+          const aPush = overlap * (b.mass / totalMass);
+          const bPush = overlap * (a.mass / totalMass);
+          a.x -= nx * aPush;
+          a.y -= ny * aPush;
+          b.x += nx * bPush;
+          b.y += ny * bPush;
+
+          const rvx = b.vx - a.vx, rvy = b.vy - a.vy;
+          const velAlongNormal = rvx * nx + rvy * ny;
+          if (velAlongNormal < 0) {
+            const restitution = RESTITUTION;
+            const impulse =
+              (-(1 + restitution) * velAlongNormal) /
+              (1 / a.mass + 1 / b.mass);
+            const ix = impulse * nx, iy = impulse * ny;
+            a.vx -= ix / a.mass;
+            a.vy -= iy / a.mass;
+            b.vx += ix / b.mass;
+            b.vy += iy / b.mass;
+          }
+        }
+      }
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, width, height);
+
+    for (const b of balls) {
+      const grad = ctx.createRadialGradient(
+        b.x - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.1,
+        b.x, b.y, b.r
+      );
+      grad.addColorStop(0, "#ffffff");
+      grad.addColorStop(0.25, b.color);
+      grad.addColorStop(1, shade(b.color, -0.25));
+
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.shadowColor = "rgba(0,0,0,0.4)";
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 4;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+    }
+  }
+
+  function shade(hex, amt) {
+    const c = hex.replace("#", "");
+    const num = parseInt(c, 16);
+    let r = (num >> 16) + Math.round(255 * amt);
+    let g = ((num >> 8) & 0xff) + Math.round(255 * amt);
+    let b = (num & 0xff) + Math.round(255 * amt);
+    r = Math.max(0, Math.min(255, r));
+    g = Math.max(0, Math.min(255, g));
+    b = Math.max(0, Math.min(255, b));
+    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+  }
+
+  let lastTime = performance.now();
+  function loop(now) {
+    const dt = (now - lastTime) / 1000;
+    lastTime = now;
+    step(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // ---- UI wiring ---------------------------------------------------------
+
+  startBtn.addEventListener("click", () => {
+    startOverlay.classList.add("hidden");
+    resetBalls();
+    enableOrientation();
+    requestAnimationFrame((t) => {
+      lastTime = t;
+      requestAnimationFrame(loop);
+    });
+    setTimeout(() => (hint.style.display = "none"), 4000);
+  });
+
+  addBallBtn.addEventListener("click", () => spawnBall());
+
+  resetBtn.addEventListener("click", () => resetBalls());
+
+  canvas.addEventListener("pointerdown", (e) => {
+    spawnBall(e.clientX, e.clientY);
+    hint.style.display = "none";
+  });
+})();
+</script>
+
+</body>
+</html>
