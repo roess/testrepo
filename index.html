@@ -124,6 +124,43 @@
   .hidden {
     display: none !important;
   }
+
+  #rotatePrompt {
+    position: fixed;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(11,15,26,0.97);
+    color: #eaf0ff;
+    text-align: center;
+    padding: 24px;
+    z-index: 30;
+  }
+
+  #rotatePrompt.show {
+    display: flex;
+  }
+
+  #rotatePrompt .icon {
+    font-size: 46px;
+    animation: rotateHint 1.6s ease-in-out infinite;
+  }
+
+  #rotatePrompt p {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #b7c0da;
+    margin: 0;
+    max-width: 280px;
+  }
+
+  @keyframes rotateHint {
+    0%, 100% { transform: rotate(0deg); }
+    50% { transform: rotate(-90deg); }
+  }
 </style>
 </head>
 <body>
@@ -148,6 +185,11 @@
   <button id="startBtn">게임 시작</button>
 </div>
 
+<div id="rotatePrompt">
+  <div class="icon">📱</div>
+  <p>화면을 <strong>세로</strong>로 유지해주세요.<br>기울이는 건 자유롭게 해도 되지만,<br>화면 자체는 회전하지 않아요.</p>
+</div>
+
 <script>
 (function () {
   "use strict";
@@ -161,9 +203,39 @@
   const addBallBtn = document.getElementById("addBallBtn");
   const resetBtn = document.getElementById("resetBtn");
   const hint = document.getElementById("hint");
+  const rotatePrompt = document.getElementById("rotatePrompt");
 
   let dpr = Math.min(window.devicePixelRatio || 1, 2);
   let width = 0, height = 0;
+
+  // ---- Keep the page from visually auto-rotating ------------------------
+  // Where the browser supports it (mostly Android Chrome), lock the real
+  // screen orientation so it never rotates at all. Where it doesn't (e.g.
+  // iOS Safari), catch the landscape flip before it mangles the layout and
+  // freeze the game behind a "hold it portrait" prompt instead of letting
+  // the page rotate.
+  let paused = false;
+
+  async function lockOrientation() {
+    try {
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch (err) { /* fullscreen not available/allowed - ignore */ }
+    try {
+      if (screen.orientation && screen.orientation.lock) {
+        await screen.orientation.lock("portrait");
+      }
+    } catch (err) { /* lock not supported - the rotatePrompt fallback covers it */ }
+  }
+
+  const landscapeQuery = window.matchMedia("(orientation: landscape)");
+  function handleOrientationQuery(e) {
+    paused = e.matches;
+    rotatePrompt.classList.toggle("show", paused);
+    lastTime = performance.now();
+  }
+  landscapeQuery.addEventListener("change", handleOrientationQuery);
 
   function resize() {
     width = window.innerWidth;
@@ -396,6 +468,11 @@
 
   let lastTime = performance.now();
   function loop(now) {
+    if (paused) {
+      lastTime = now;
+      requestAnimationFrame(loop);
+      return;
+    }
     const dt = (now - lastTime) / 1000;
     lastTime = now;
     step(dt);
@@ -409,6 +486,8 @@
     startOverlay.classList.add("hidden");
     resetBalls();
     enableOrientation();
+    lockOrientation();
+    handleOrientationQuery(landscapeQuery);
     requestAnimationFrame((t) => {
       lastTime = t;
       requestAnimationFrame(loop);
